@@ -1,0 +1,82 @@
+# MultiCode Enterprise Configuration Example
+# Copy this file and customize for your deployment.
+# Never commit real API keys or secrets.
+
+[agent]
+max_agents = 3
+min_agents = 1
+allow_dynamic_spawning = true
+default_roles = ["planner", "engineer", "reviewer"]
+max_debate_turns = 15
+require_unanimous_consensus = true
+agent_timeout_seconds = 120
+
+[file_operations]
+allow_read = true
+allow_write = true
+allow_create = true
+allow_delete = false
+allow_move = true
+allow_copy = true
+allow_execute = false
+max_file_size_mb = 10
+require_confirmation_for_write = true
+require_confirmation_for_delete = true
+
+[api]
+# Set via environment variable OPENROUTER_API_KEY or OS keyring — never here
+# api_key = "<SET VIA KEYRING OR ENV>"
+base_url = "https://openrouter.ai/api/v1"
+timeout_seconds = 120
+max_retries = 3
+retry_delay_seconds = 2.0
+# default_model = "anthropic/claude-3.5-sonnet"
+max_tokens_per_request = 4000
+temperature = 0.7
+
+[memory]
+max_tokens = 8000
+compression_threshold = 0.8
+enable_summarization = true
+max_history_entries = 100
+
+[safety]
+enable_shell_safety = true
+enable_file_safety = true
+require_permission_for_sudo = true
+require_permission_for_network = true
+require_permission_for_file_delete = true
+max_command_timeout_seconds = 60
+log_all_commands = true
+
+[ui]
+theme = "default"
+show_agent_thoughts = true
+show_token_usage = true
+show_timing = true
+compact_mode = false
+max_output_lines = 100
+syntax_highlighting = true
+banner_style = "default"
+
+[routing]
+enable_smart_routing = true
+force_mode = "auto"  # "auto", "simple", "complex", "audit"
+
+# --- Enterprise Extensions ---
+
+[audit]
+# Enable structured JSONL audit logging
+enabled = false
+# log_path = "~/.multicode/audit.jsonl"
+
+[quota]
+# Token and cost management
+# daily_token_budget = 100000
+# cost_warning_threshold_usd = 5.0
+# action_on_limit = "warn"  # "warn", "block", "fallback"
+
+[rbac]
+# Role-based access control (future)
+# role = "developer"  # "developer", "auditor", "admin"
+# allowed_operations = ["read", "write", "execute"]

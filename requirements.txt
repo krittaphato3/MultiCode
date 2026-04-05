@@ -1,0 +1,22 @@
+# MultiCode - AI Coding Assistant with Multi-Agent Debate Architecture
+# Requirements
+
+# UI Framework
+rich>=13.7.0
+
+# Async HTTP client
+aiohttp>=3.9.0
+
+# Sync HTTP client (for reliable API validation)
+requests>=2.31.0
+
+# Configuration & secrets
+keyring>=24.3.0
+python-dotenv>=1.0.0
+
+# Utilities
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Keyboard input for interactive selector
+readchar>=4.0.0

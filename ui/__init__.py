@@ -1,0 +1,1 @@
+"""UI module for Rich/Textual CLI interface."""
