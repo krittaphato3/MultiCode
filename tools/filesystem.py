@@ -113,11 +113,11 @@ class FileSystemTools:
         # Security check: ensure resolved path is within base_dir
         try:
             resolved.relative_to(self._base_dir.resolve())
-        except ValueError:
+        except ValueError as e:
             raise PathSecurityError(
                 f"Path '{path}' resolves to '{resolved}' which is outside "
                 f"the allowed base directory '{self._base_dir}'"
-            )
+            ) from e
         
         return resolved
     
@@ -167,16 +167,16 @@ class FileSystemTools:
                 encoding=encoding
             )
             
-        except FileNotFoundError:
-            raise FileOperationError(f"File not found: {resolved_path}")
-        except PermissionError:
-            raise FileOperationError(f"Permission denied: {resolved_path}")
-        except UnicodeDecodeError:
+        except FileNotFoundError as e:
+            raise FileOperationError(f"File not found: {resolved_path}") from e
+        except PermissionError as e:
+            raise FileOperationError(f"Permission denied: {resolved_path}") from e
+        except UnicodeDecodeError as e:
             raise FileOperationError(
                 f"Cannot decode file {resolved_path} with encoding {encoding}"
-            )
+            ) from e
         except Exception as e:
-            raise FileOperationError(f"Error reading file: {e}")
+            raise FileOperationError(f"Error reading file: {e}") from e
     
     async def write_file(
         self,
@@ -246,10 +246,10 @@ class FileSystemTools:
 
                 return str(resolved_path.relative_to(self._base_dir))
 
-            except PermissionError:
-                raise FileOperationError(f"Permission denied: {resolved_path}")
+            except PermissionError as e:
+                raise FileOperationError(f"Permission denied: {resolved_path}") from e
             except OSError as e:
-                raise FileOperationError(f"Error writing file: {e}")
+                raise FileOperationError(f"Error writing file: {e}") from e
     
     async def list_directory(self, path: str | Path = ".") -> DirectoryListing:
         """
@@ -295,12 +295,12 @@ class FileSystemTools:
                 files=files
             )
             
-        except NotADirectoryError:
-            raise FileOperationError(f"Not a directory: {resolved_path}")
-        except PermissionError:
-            raise FileOperationError(f"Permission denied: {resolved_path}")
+        except NotADirectoryError as e:
+            raise FileOperationError(f"Not a directory: {resolved_path}") from e
+        except PermissionError as e:
+            raise FileOperationError(f"Permission denied: {resolved_path}") from e
         except Exception as e:
-            raise FileOperationError(f"Error listing directory: {e}")
+            raise FileOperationError(f"Error listing directory: {e}") from e
     
     async def file_exists(self, path: str | Path) -> bool:
         """Check if a file exists."""
@@ -353,10 +353,10 @@ class FileSystemTools:
                     return True
                 return False
                 
-            except PermissionError:
-                raise FileOperationError(f"Permission denied: {resolved_path}")
+            except PermissionError as e:
+                raise FileOperationError(f"Permission denied: {resolved_path}") from e
             except Exception as e:
-                raise FileOperationError(f"Error deleting file: {e}")
+                raise FileOperationError(f"Error deleting file: {e}") from e
     
     async def get_file_info(self, path: str | Path) -> dict:
         """
@@ -383,10 +383,10 @@ class FileSystemTools:
                 "is_directory": resolved_path.is_dir(),
             }
             
-        except FileNotFoundError:
-            raise FileOperationError(f"File not found: {resolved_path}")
+        except FileNotFoundError as e:
+            raise FileOperationError(f"File not found: {resolved_path}") from e
         except Exception as e:
-            raise FileOperationError(f"Error getting file info: {e}")
+            raise FileOperationError(f"Error getting file info: {e}") from e
 
 
 # Global instance for convenience

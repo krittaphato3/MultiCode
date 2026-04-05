@@ -4,8 +4,11 @@ Provides beautiful, interactive command-line UI for setup and model selection.
 """
 
 import asyncio
+import logging
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich import box
 from rich.console import Console
@@ -27,6 +30,15 @@ from config import (
     set_max_agents,
     set_selected_models,
 )
+
+if TYPE_CHECKING:
+    from core.uninstall import UninstallManager
+    from tools.filesystem import FileSystemTools
+
+logger = logging.getLogger(__name__)
+
+# Capture original working directory at import time
+ORIGINAL_CWD = os.getcwd()
 
 # Color scheme
 PRIMARY_COLOR = "bold blue"
@@ -113,7 +125,7 @@ class MultiCodeCLI:
                     )
                 except (KeyboardInterrupt, EOFError):
                     # Handle Ctrl+C during input
-                    raise KeyboardInterrupt()
+                    raise KeyboardInterrupt() from None
 
                 if not api_key or api_key.strip() == "":
                     self.console.print("[red]❌ API key cannot be empty[/red]")
@@ -194,7 +206,7 @@ class MultiCodeCLI:
                                 error_data = response.json()
                                 error_msg = error_data.get("error", {}).get("message", str(error_data))
                                 self.console.print(f"[dim]Server response: {error_msg}[/dim]")
-                            except:
+                            except Exception:
                                 self.console.print(f"[dim]Server response: {response.text[:200]}[/dim]")
                             # DOES NOT RETURN - forces user to try again
 
@@ -204,7 +216,7 @@ class MultiCodeCLI:
                         self.console.print("[yellow]Check your internet connection[/yellow]")
                         # DOES NOT RETURN - forces user to check connection and try again
                         
-                    except requests.exceptions.ConnectionError as e:
+                    except requests.exceptions.ConnectionError:
                         progress.update(task, description="✗ Connection error", completed=True)
                         self.console.print("[red]✗ Cannot connect to OpenRouter![/red]")
                         self.console.print("[yellow]Check your internet connection and firewall settings[/yellow]")
@@ -533,15 +545,10 @@ class MultiCodeCLI:
 
         self.console.print("\n[bold green]✓ MultiCode Ready![/bold green]")
         self.console.print(f"[dim]Models: {len(selected_models)} | Max Agents: {max_agents}[/dim]\n")
-        
-        # Show current working directory (from main module)
-        try:
-            from main import ORIGINAL_CWD
-            cwd = ORIGINAL_CWD
-        except ImportError:
-            import os
-            cwd = os.getcwd()
-        
+
+        # Show current working directory
+        cwd = ORIGINAL_CWD
+
         self.console.print(f"[dim]Working Directory: {cwd}[/dim]")
         self.console.print("[dim]Type your coding task or /help for commands[/dim]\n")
         
@@ -698,13 +705,8 @@ class MultiCodeCLI:
     
     async def _show_working_directory(self) -> None:
         """Show the current working directory."""
-        try:
-            from main import ORIGINAL_CWD
-            cwd = ORIGINAL_CWD
-        except ImportError:
-            import os
-            cwd = os.getcwd()
-        
+        cwd = ORIGINAL_CWD
+
         self.console.print("\n[bold]Working Directory:[/bold]")
         self.console.print(f"  [cyan]{cwd}[/cyan]")
         self.console.print(f"  [dim]This is where MultiCode is installed[/dim]")
@@ -714,16 +716,35 @@ class MultiCodeCLI:
         """
         Uninstall MultiCode with enterprise-grade safety and audit logging.
 
+        Strategy: We cannot uninstall a running .exe from within itself.
+        Instead, we spawn a detached cleanup process that waits for us to exit,
+        then performs the full uninstall and deletes all entry points.
+
         Args:
             wipe: If True, remove all user data including settings and API keys.
 
         Returns:
             True if uninstall was performed, False if cancelled
         """
-        from core.uninstall import (
-            UninstallManager,
-            get_uninstall_summary,
-        )
+        import subprocess
+        import sys
+        import tempfile
+
+        # Check platform - current implementation is Windows-only
+        if sys.platform != "win32":
+            self.console.print(Panel(
+                "[bold yellow]⚠️  Platform Not Supported[/bold yellow]\n\n"
+                "The automatic uninstaller currently only supports Windows.\n\n"
+                "[bold]Manual Uninstall Instructions:[/bold]\n"
+                "  1. Run: [cyan]pip uninstall -y multicode[/cyan]\n"
+                "  2. Remove settings: [cyan]rm -rf ~/.multicode[/cyan]\n"
+                "  3. Remove entry points (if needed):\n"
+                "     [cyan]rm $(which multicode) $(which multicode-cli)[/cyan]",
+                title="UNINSTALL",
+                border_style="yellow",
+            ))
+            self.console.print()
+            return False
 
         self.console.print()
 
@@ -779,27 +800,192 @@ class MultiCodeCLI:
             else:
                 mode = "standard"
 
-        # Execute uninstall via manager
-        audit_mgr = getattr(self, "_audit", None)
-        mgr = UninstallManager(mode=mode, audit_logger=audit_mgr)
-        plan = mgr.create_plan()
-        result = mgr.execute(plan)
+        # Gather paths for cleanup
+        import sysconfig
+        scripts_dir = Path(sysconfig.get_path("scripts"))
+        site_packages = Path(sysconfig.get_path("purelib"))
+        python_exe = sys.executable
+        config_dir = Path.home() / ".multicode"
 
-        # Display results
-        self.console.print(get_uninstall_summary(result))
+        # Get ALL multicode-related files (not just entry points)
+        entry_patterns = [
+            "multicode*",
+            "*multicode*",
+        ]
+        
+        # Find all multicode executables in Scripts directory
+        entry_paths = []
+        if scripts_dir.exists():
+            for pattern in entry_patterns:
+                entry_paths.extend([str(p) for p in scripts_dir.glob(pattern) if p.is_file()])
+        entry_paths = list(set(entry_paths))  # Remove duplicates
 
-        if result.errors:
-            self.console.print("\n[yellow]Some items could not be removed. See warnings above.[/yellow]")
-            self.console.print("[dim]Exit code: 1 (partial failure)[/dim]")
-        else:
-            # Spawn a detached cleanup process to delete locked exe files after we exit
-            self._cleanup_locked_exes(mgr)
+        # Escape paths for PowerShell
+        def ps_escape(p: str) -> str:
+            return p.replace("'", "''")
 
-            # Show success panel with countdown
+        # Build comprehensive PowerShell cleanup script
+        ps_lines = [
+            "# MultiCode Uninstall Cleanup Script",
+            "# This script runs AFTER the main process exits",
+            f"$mode = '{mode}'",
+            "$ErrorActionPreference = 'Continue'",  # Continue on errors
+            "",
+            "# Step 1: Wait for the main process to fully exit",
+            "Start-Sleep -Seconds 3",
+            "",
+            "# Step 2: Try pip uninstall (may fail if .exe is locked, that's OK)",
+            f"Write-Host 'Running pip uninstall...' -ForegroundColor Yellow",
+            f"& '{ps_escape(python_exe)}' -m pip uninstall -y multicode 2>&1 | Out-Default",
+            "",
+            "# Step 3: Force-delete ALL multicode entry point scripts",
+            f"Write-Host 'Cleaning up entry points...' -ForegroundColor Yellow",
+            "# Function to forcefully delete locked files",
+            "function Force-Delete {",
+            "    param([string]$Path)",
+            "    if (-not (Test-Path $Path)) { return }",
+            "    try {",
+            "        # Try normal delete first",
+            "        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop",
+            "        Write-Host \"  Deleted: $Path\" -ForegroundColor Green",
+            "    } catch {",
+            "        try {",
+            "            # File is locked - zero it out first (Windows trick)",
+            "            Write-Host \"  File locked, zeroing: $(Split-Path $Path -Leaf)\" -ForegroundColor Yellow",
+            "            $fs = [System.IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')",
+            "            $fs.SetLength(0)",
+            "            $fs.Close()",
+            "            Start-Sleep -Milliseconds 500",
+            "            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop",
+            "            Write-Host \"  Deleted (zero-out): $(Split-Path $Path -Leaf)\" -ForegroundColor Green",
+            "        } catch {",
+            "            Write-Host \"  FAILED: $(Split-Path $Path -Leaf)\" -ForegroundColor Red",
+            "        }",
+            "    }",
+            "}",
+            "",
+        ]
+
+        # Delete each entry point using force-delete
+        for ep in entry_paths:
+            escaped = ps_escape(ep)
+            ps_lines.append(f"Force-Delete '{escaped}'")
+
+        ps_lines.extend([
+            "",
+            "# Step 4: Clean up ALL multicode directories in site-packages",
+            f"Write-Host 'Cleaning site-packages...' -ForegroundColor Yellow",
+            f"$sp = '{ps_escape(str(site_packages))}'",
+            "# Remove main multicode package directory",
+            f"if (Test-Path (Join-Path $sp 'multicode')) {{ Remove-Item -Path (Join-Path $sp 'multicode') -Recurse -Force -ErrorAction SilentlyContinue }}",
+            "# Remove dist-info directories",
+            f"Get-ChildItem $sp -Directory -Filter '*multicode*' | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue",
+            "# Remove editable install .pth files",
+            f"Get-ChildItem $sp -File -Filter '*multicode*.pth' | Remove-Item -Force -ErrorAction SilentlyContinue",
+            f"Get-ChildItem $sp -File -Filter '*multicode*finder*.py' | Remove-Item -Force -ErrorAction SilentlyContinue",
+            "",
+            "# Step 5: Clean up Scripts directory (catch any remaining files)",
+            f"Write-Host 'Cleaning Scripts directory...' -ForegroundColor Yellow",
+            f"$scriptFiles = Get-ChildItem '{ps_escape(str(scripts_dir))}' -File -Filter '*multicode*' -ErrorAction SilentlyContinue",
+            "foreach ($f in $scriptFiles) { Force-Delete $f.FullName }",
+            "",
+            "# Step 6: Clean build artifacts in source tree",
+            f"Write-Host 'Cleaning build artifacts...' -ForegroundColor Yellow",
+            f"$srcDir = '{ps_escape(str(Path.cwd()))}'",
+            "if (Test-Path (Join-Path $srcDir 'pyproject.toml')) {",
+            "    foreach ($dir in @('build', 'dist', '__pycache__', '.pytest_cache', '.ruff_cache')) {",
+            "        $target = Join-Path $srcDir $dir",
+            "        if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }",
+            "    }",
+            "}",
+            "",
+        ])
+
+        if mode == "wipe":
+            ps_lines.extend([
+                "# Step 7 (wipe): Remove user settings and API keys",
+                f"Write-Host 'Wiping user settings...' -ForegroundColor Yellow",
+                f"$configDir = '{ps_escape(str(config_dir))}'",
+                f"if (Test-Path $configDir) {{ Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue }}",
+                "",
+            ])
+
+        ps_lines.extend([
+            "# Step 8: Verify uninstallation",
+            "Write-Host '' -ForegroundColor Yellow",
+            "Write-Host 'Verifying uninstallation...' -ForegroundColor Yellow",
+            "$remainingExe = Get-ChildItem $env:USERPROFILE\\AppData\\Local\\Programs\\Python\\*\\Scripts -File -Filter '*multicode*' -ErrorAction SilentlyContinue",
+            "if ($remainingExe) {",
+            "    Write-Host 'WARNING: Some files still remain:' -ForegroundColor Red",
+            "    $remainingExe | ForEach-Object { Write-Host \"  $($_.FullName)\" -ForegroundColor Red }",
+            "    Write-Host 'You may need to manually delete these files or restart your PC.' -ForegroundColor Yellow",
+            "} else {",
+            "    Write-Host 'SUCCESS: All multicode files have been removed!' -ForegroundColor Green",
+            "}",
+            "",
+            "# Step 9: Countdown with skip option",
+            "Write-Host '' -ForegroundColor Green",
+            "Write-Host 'Window will auto-close in 10 seconds. Press any key to close now...' -ForegroundColor DarkGray",
+            "$startTime = Get-Date",
+            "for ($i = 10; $i -gt 0; $i--) {",
+            "    $elapsed = ((Get-Date) - $startTime).TotalSeconds",
+            "    $remaining = 10 - [math]::Floor($elapsed)",
+            "    if ($remaining -le 0) { break }",
+            "    Write-Host \"`rClosing in $remaining seconds...  \" -NoNewline -ForegroundColor DarkGray",
+            "    Start-Sleep -Milliseconds 100",
+            "    if ($Host.UI.RawUI.KeyAvailable) {",
+            "        $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')",
+            "        break",
+            "    }",
+            "}",
+            "Write-Host ''",
+        ])
+
+        ps_content = "\n".join(ps_lines)
+
+        # Write the cleanup script
+        try:
+            ps_path = Path(tempfile.gettempdir()) / "multicode_uninstall.ps1"
+            ps_path.write_text(ps_content, encoding="utf-8")
+            
+            # Log the script path for debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Uninstall script written to: {ps_path}")
+
+            # Show final message BEFORE spawning cleanup
+            self.console.print(Panel(
+                "[bold green]✓ MultiCode Uninstall Initiated![/bold green]\n\n"
+                "A cleanup window will appear and show the progress.\n"
+                "All entry points and packages will be removed.\n"
+                f"Mode: [bold]{'Full Wipe' if mode == 'wipe' else 'Standard (settings kept)'}[/bold]",
+                title="Uninstall Started",
+                border_style="green",
+            ))
             self.console.print()
-            self._countdown_and_exit(5)
+            self.console.print("[dim]Exiting MultiCode...[/dim]\n")
 
-        return True
+            # Spawn PowerShell process - visible window with countdown
+            # No -NoExit flag, so it will close automatically after countdown
+            create_new_process_group = 0x00000200
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-WindowStyle", "Normal",  # Show window normally
+                    "-File", str(ps_path),
+                ],
+                creationflags=create_new_process_group,
+            )
+        except Exception as e:
+            self.console.print(f"[red]Failed to spawn cleanup process: {e}[/red]")
+            self.console.print("[yellow]Please uninstall manually: pip uninstall -y multicode[/yellow]")
+
+        # Exit cleanly — let the background process handle the rest
+        import sys
+        self.console.print("[dim]Exiting MultiCode...[/dim]\n")
+        sys.exit(0)
 
     def _cleanup_locked_exes(self, mgr: "UninstallManager") -> None:
         """Spawn a hidden background process to delete locked files after we exit."""
@@ -817,14 +1003,18 @@ class MultiCodeCLI:
         # Build a PowerShell script for cleanup (more reliable timing than batch)
         ps_lines = [
             "# MultiCode cleanup - runs after main process exits",
-            "Start-Sleep -Seconds 10",  # Wait for process to fully exit
+            "Start-Sleep -Seconds 3",  # Brief wait for process to fully exit
         ]
         for path_str in paths_to_clean:
             escaped = path_str.replace("'", "''")
+            # Try to delete the original path (may already be zeroed/renamed)
             ps_lines.append(f"if (Test-Path '{escaped}') {{ Remove-Item -LiteralPath '{escaped}' -Recurse -Force -ErrorAction SilentlyContinue }}")
             # Also check renamed version
             renamed = path_str + ".__mc_uninstall"
-            ps_lines.append(f"if (Test-Path '{renamed}') {{ Remove-Item -LiteralPath '{renamed}' -Recurse -Force -ErrorAction SilentlyContinue }}")
+            escaped_renamed = renamed.replace("'", "''")
+            ps_lines.append(f"if (Test-Path '{escaped_renamed}') {{ Remove-Item -LiteralPath '{escaped_renamed}' -Recurse -Force -ErrorAction SilentlyContinue }}")
+            # Also check zeroed-out version
+            ps_lines.append(f"if (Test-Path '{escaped}') {{ Remove-Item -LiteralPath '{escaped}' -Force -ErrorAction SilentlyContinue }}")
 
         # Clean up egg-info directories
         import sysconfig
@@ -850,7 +1040,7 @@ class MultiCodeCLI:
 
     def _countdown_and_exit(self, seconds: int) -> None:
         """Display a countdown and exit the application."""
-        import os
+        import sys
         import time
 
         # Show success panel
@@ -868,7 +1058,7 @@ class MultiCodeCLI:
             self.console.print(f"[dim]Closing in {i} second{'s' if i > 1 else ''}...[/dim]")
             time.sleep(1)
 
-        os._exit(0)
+        sys.exit(0)
     
     async def _arrow_key_select(self, options: list[str], default_index: int = 0) -> str:
         """

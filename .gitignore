@@ -176,6 +176,9 @@ temp/
 # Test artifacts
 .test_results/
 test_output/
+tests/test_*.bat
+tests/test_*.ps1
+tests/test_*.sh
 
 # Documentation build
 docs/_build/

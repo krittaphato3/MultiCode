@@ -10,11 +10,9 @@ Features:
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
-import aiohttp
-from aiohttp import ClientError, ClientTimeout
+import requests
 
 from config import OPENROUTER_BASE_URL, get_api_key
 
@@ -101,15 +99,14 @@ class AuthenticationError(OpenRouterError):
 
 class OpenRouterClient:
     """
-    Async OpenRouter API client with built-in Safenet protection.
-    
+    OpenRouter API client with built-in Safenet protection.
+
     Features:
     - Exponential backoff for rate limits and timeouts
-    - State preservation during pauses
-    - Rate limit header parsing
-    - Streaming support
+    - Automatic retry on failures
+    - Model fallback chain
     """
-    
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -127,48 +124,10 @@ class OpenRouterClient:
         self.initial_backoff = initial_backoff
         self.backoff_multiplier = backoff_multiplier
         self.max_backoff = max_backoff
-        
-        self._session: aiohttp.ClientSession | None = None
+
         self._request_count = 0
         self._consecutive_failures = 0
-    
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create the aiohttp session."""
-        if self._session is None or self._session.closed:
-            # Check API key is set
-            if not self.api_key:
-                raise AuthenticationError("No API key configured. Please run setup first.")
 
-            # Log session creation without exposing any key material
-            logger.debug("Creating new API session (key: ****)")
-
-            # Configure TCP connector with better defaults
-            connector = aiohttp.TCPConnector(
-                ttl_dns_cache=300,
-                limit=10,
-                force_close=False,
-            )
-
-            self._session = aiohttp.ClientSession(
-                timeout=ClientTimeout(total=self.timeout, connect=30),
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/multicode",
-                    "X-Title": "MultiCode",
-                },
-                connector=connector,
-            )
-
-            logger.debug("API session created with OpenRouter headers")
-            
-        return self._session
-    
-    async def close(self) -> None:
-        """Close the HTTP session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-    
     def _parse_rate_limit_headers(self, headers: dict) -> RateLimitInfo:
         """Parse rate limit information from response headers."""
         return RateLimitInfo(
@@ -176,45 +135,20 @@ class OpenRouterClient:
             remaining_tokens=int(headers.get("X-RateLimit-Remaining-Tokens", -1)),
             reset_time=int(headers.get("X-RateLimit-Reset", -1)),
         )
-    
-    async def _handle_error_response(self, response: aiohttp.ClientResponse) -> None:
-        """Handle error responses from the API."""
-        status = response.status
 
-        try:
-            error_data = await response.json()
-            error_message = error_data.get("error", {}).get("message", str(error_data))
-        except Exception:
-            error_message = await response.text()
-
-        if status == 429:
-            # Rate limit hit
-            retry_after = int(response.headers.get("Retry-After", 60))
-            raise RateLimitError(f"Rate limit exceeded: {error_message}", retry_after)
-
-        elif status == 401:
-            raise AuthenticationError(f"Invalid API key: {error_message}")
-
-        elif status == 408:
-            raise TimeoutError(f"Request timeout: {error_message}")
-
-        elif status >= 500:
-            # Server error - may be temporary
-            raise OpenRouterError(f"Server error ({status}): {error_message}")
-
-        else:
-            raise OpenRouterError(f"API error ({status}): {error_message}")
-    
-    async def _handle_error_response_sync(self, response) -> None:
-        """Handle error responses from synchronous requests."""
+    def _handle_error_response(self, response) -> None:
+        """Handle error responses from requests."""
         status = response.status_code
-        
+
         try:
             error_data = response.json()
             error_message = error_data.get("error", {}).get("message", str(error_data))
-        except:
-            error_message = response.text
-        
+        except Exception:
+            try:
+                error_message = response.text
+            except Exception:
+                error_message = "Unknown error"
+
         if status == 429:
             retry_after = int(response.headers.get("Retry-After", 60))
             raise RateLimitError(f"Rate limit exceeded: {error_message}", retry_after)
@@ -226,84 +160,69 @@ class OpenRouterClient:
             raise OpenRouterError(f"Server error ({status}): {error_message}")
         else:
             raise OpenRouterError(f"API error ({status}): {error_message}")
-    
-    async def _request_with_backoff(
+
+    def _request_with_retry(
         self,
         method: str,
-        endpoint: str,
+        url: str,
         **kwargs
-    ) -> aiohttp.ClientResponse:
+    ) -> requests.Response:
         """
         Make an HTTP request with exponential backoff retry logic.
-        
+
         This is the core of the Safenet - it catches rate limits and timeouts,
         pauses with exponential backoff, and retries automatically.
         """
-        session = await self._get_session()
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
         backoff = self.initial_backoff
         last_exception = None
-        
+
         for attempt in range(self.max_retries + 1):
             try:
                 self._request_count += 1
                 logger.debug(f"API request attempt {attempt + 1}/{self.max_retries + 1}")
-                
-                async with session.request(method, url, **kwargs) as response:
-                    if response.status >= 400:
-                        await self._handle_error_response(response)
-                    
-                    # Success - reset consecutive failures
-                    self._consecutive_failures = 0
-                    return response
-                    
+
+                response = requests.request(method, url, timeout=self.timeout, **kwargs)
+
+                if response.status_code >= 400:
+                    self._handle_error_response(response)
+
+                # Success - reset consecutive failures
+                self._consecutive_failures = 0
+                return response
+
             except RateLimitError as e:
                 last_exception = e
                 self._consecutive_failures += 1
-                
-                # Calculate wait time with exponential backoff
                 wait_time = min(backoff, self.max_backoff)
-                
-                logger.warning(
-                    f"⚠️  API Rate Limit hit. Pausing for {wait_time:.1f} seconds..."
-                )
-                
-                await asyncio.sleep(wait_time)
+                logger.warning(f"⚠️  API Rate Limit hit. Pausing for {wait_time:.1f} seconds...")
+                import time
+                time.sleep(wait_time)
                 backoff *= self.backoff_multiplier
-                
+
             except TimeoutError as e:
                 last_exception = e
                 self._consecutive_failures += 1
-                
                 wait_time = min(backoff, self.max_backoff)
-                
-                logger.warning(
-                    f"⚠️  Request timeout. Pausing for {wait_time:.1f} seconds..."
-                )
-                
-                await asyncio.sleep(wait_time)
+                logger.warning(f"⚠️  Request timeout. Pausing for {wait_time:.1f} seconds...")
+                import time
+                time.sleep(wait_time)
                 backoff *= self.backoff_multiplier
-                
-            except ClientError as e:
+
+            except requests.RequestException as e:
                 last_exception = e
                 self._consecutive_failures += 1
-                
                 wait_time = min(backoff, self.max_backoff)
-                
-                logger.warning(
-                    f"⚠️  Network error: {e}. Pausing for {wait_time:.1f} seconds..."
-                )
-                
-                await asyncio.sleep(wait_time)
+                logger.warning(f"⚠️  Network error: {e}. Pausing for {wait_time:.1f} seconds...")
+                import time
+                time.sleep(wait_time)
                 backoff *= self.backoff_multiplier
-        
+
         # All retries exhausted
         raise OpenRouterError(
             f"Max retries ({self.max_retries}) exceeded. "
             f"Last error: {last_exception}"
         )
-    
+
     async def chat_completion(
         self,
         messages: list[ChatMessage],
@@ -315,53 +234,51 @@ class OpenRouterClient:
     ) -> ChatResponse:
         """
         Send a chat completion request to OpenRouter.
-        
-        Uses synchronous requests in thread pool for better Windows compatibility.
-        
+
         Args:
             messages: List of chat messages
             model: Model ID to use
             system_prompt: Optional system prompt
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
-            stream: Whether to stream (not supported with sync requests)
-            
+            stream: Whether to stream (not currently supported)
+
         Returns:
             ChatResponse
         """
         if not self.api_key:
             raise AuthenticationError("No API key configured")
-        
+
         # Build messages list
         api_messages = []
-        
+
         if system_prompt:
             api_messages.append({"role": "system", "content": system_prompt})
-        
+
         for msg in messages:
             api_messages.append({
                 "role": msg.role,
                 "content": msg.content,
                 **({"name": msg.name} if msg.name else {})
             })
-        
+
         # Build request payload
         payload = {
             "model": model,
             "messages": api_messages,
             "temperature": temperature,
         }
-        
+
         if max_tokens:
             payload["max_tokens"] = max_tokens
-        
-        # Run in thread pool to avoid blocking
+
+        # Make request using thread pool to avoid blocking async event loop
         loop = asyncio.get_running_loop()
-        
+
         def _make_request():
-            import requests as req
-            return req.post(
-                url=f"{self.base_url}/chat/completions",
+            return self._request_with_retry(
+                "POST",
+                f"{self.base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -369,16 +286,11 @@ class OpenRouterClient:
                     "X-Title": "MultiCode",
                 },
                 json=payload,
-                timeout=min(self.timeout, 60),
             )
-        
+
         # Execute in thread pool
         response = await loop.run_in_executor(None, _make_request)
-        
-        # Handle errors
-        if response.status_code != 200:
-            await self._handle_error_response_sync(response)
-        
+
         # Parse response
         try:
             data = response.json()
@@ -397,7 +309,7 @@ class OpenRouterClient:
                 usage=data.get("usage", {}),
             )
         except Exception as e:
-            raise OpenRouterError(f"Failed to parse response: {e}")
+            raise OpenRouterError(f"Failed to parse response: {e}") from e
     
     async def chat_completion_with_fallback(
         self,
@@ -490,85 +402,6 @@ class OpenRouterClient:
             f"All {len(models_to_try)} models failed. Last error: {last_error}"
         )
 
-    async def _stream_response(
-        self,
-        response: aiohttp.ClientResponse
-    ) -> AsyncGenerator[str, None]:
-        """
-        Stream the response content with proper SSE buffering.
-        
-        Server-Sent Events can be split across TCP packets, so we buffer
-        incomplete lines and only process complete SSE messages.
-        """
-        import json
-        
-        buffer = ""
-        
-        async for chunk in response.content.iter_any():
-            # Decode chunk and add to buffer
-            buffer += chunk.decode("utf-8")
-            
-            # Process complete lines from buffer
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                line = line.strip()
-                
-                if not line or not line.startswith("data: "):
-                    continue
-                
-                data = line[6:]  # Remove "data: " prefix
-                
-                if data == "[DONE]":
-                    return
-                
-                # Skip empty data fields (keep-alive messages)
-                if not data.strip():
-                    continue
-                
-                try:
-                    parsed = json.loads(data)
-                    choices = parsed.get("choices", [])
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                except json.JSONDecodeError:
-                    # Incomplete JSON - put data back in buffer and wait for more
-                    # This shouldn't happen with line-based splitting, but handle gracefully
-                    logger.debug(f"JSON decode error for data: {data[:50]}...")
-                    continue
-        
-        # Process any remaining data in buffer (final chunk)
-        if buffer.strip():
-            line = buffer.strip()
-            if line.startswith("data: "):
-                data = line[6:]
-                if data != "[DONE]" and data.strip():
-                    try:
-                        parsed = json.loads(data)
-                        choices = parsed.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                    except json.JSONDecodeError:
-                        pass
-    
-    async def get_models(self) -> list[dict]:
-        """Fetch available models from OpenRouter."""
-        response = await self._request_with_backoff(
-            "GET",
-            "/models",
-        )
-
-        if response.status != 200:
-            raise OpenRouterError(f"Failed to fetch models: HTTP {response.status}")
-        
-        data = await response.json()
-        return data.get("data", [])
-    
     def get_stats(self) -> dict:
         """Get client statistics."""
         return {

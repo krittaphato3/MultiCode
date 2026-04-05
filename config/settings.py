@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -158,9 +158,8 @@ class SettingsModel(BaseModel):
             warnings.append("⚠️  Shell safety is disabled - dangerous commands may execute")
         
         return warnings
-    
-    class Config:
-        validate_assignment = True
+
+    model_config = ConfigDict(validate_assignment=True)
 
 
 # Configuration file location

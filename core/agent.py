@@ -465,11 +465,10 @@ class Agent:
         
         # Parse file writes
         file_writes = self._parse_file_writes(content)
-        
+
         # Execute file writes if requested
-        write_results = []
         if execute_writes and file_writes:
-            write_results = await self._execute_file_writes(file_writes)
+            await self._execute_file_writes(file_writes)
         
         # Check for consensus
         consensus_reached = self._check_consensus(content)
@@ -509,7 +508,7 @@ class Agent:
         # Final yield with complete content and parsed actions
         full_content = "".join(content_parts)
         file_writes = self._parse_file_writes(full_content)
-        consensus = self._check_consensus(full_content)
+        self._check_consensus(full_content)
         
         yield ("", True, file_writes)
     

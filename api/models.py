@@ -167,9 +167,9 @@ class ModelManager:
             
             raw_models = response.json().get("data", [])
         except requests.exceptions.Timeout:
-            raise Exception("Request timed out while fetching models")
+            raise Exception("Request timed out while fetching models") from None
         except requests.exceptions.ConnectionError as e:
-            raise Exception(f"Connection error: {e}")
+            raise Exception(f"Connection error: {e}") from e
 
         self._cached_models = [
             ModelInfo.from_api_response(model)

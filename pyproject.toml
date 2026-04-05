@@ -83,11 +83,7 @@ ignore = [
     "W293",   # Blank line contains whitespace
     "W291",   # Trailing whitespace
     "W292",   # No newline at end of file
-    "B904",   # raise without from in except
     "F541",   # f-string without placeholders
-    "E722",   # bare except
-    "F841",   # unused variables
-    "F821",   # undefined names (false positives with dynamic imports)
 ]
 fixable = ["ALL"]
 

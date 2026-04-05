@@ -148,19 +148,35 @@ class UninstallManager:
         installs this is a .exe file; for editable installs it's a
         directory containing __main__.py.
 
-        We rename it to <name>.__mc_uninstall to break the PATH lookup.
+        Strategy:
+        1. Try to rename the file to break the PATH lookup
+        2. If rename fails, try to truncate/zero the file content
         """
         if sys.platform != "win32":
             return False
+        # Strategy 1: Try to rename
         try:
             disabled = path.with_name(path.name + ".__mc_uninstall")
             path.rename(disabled)
             self._renamed_paths.append(str(path))
             logger.info("Renamed locked path: %s → %s", path.name, disabled.name)
             return True
-        except OSError as e:
-            logger.debug("Could not rename %s: %s", path, e)
-            return False
+        except OSError:
+            pass  # Fall through to strategy 2
+
+        # Strategy 2: Try to zero out the file (works for files, not directories)
+        if path.is_file():
+            try:
+                # Overwrite with empty content — exe won't execute
+                with open(path, 'wb') as f:
+                    f.write(b'')
+                logger.info("Zeroed out locked file: %s", path.name)
+                self._renamed_paths.append(str(path))
+                return True
+            except OSError as e:
+                logger.debug("Could not zero out %s: %s", path, e)
+
+        return False
 
     def create_plan(self) -> UninstallPlan:
         """Create an uninstall plan describing what will be removed."""
@@ -239,7 +255,11 @@ class UninstallManager:
                 logger.warning("Pip uninstall returned %d", proc.returncode)
 
                 # On Windows, if the running executable is locked, track and disable it
-                if sys.platform == "win32" and "PermissionError" in stderr_text:
+                if sys.platform == "win32" and (
+                    "PermissionError" in stderr_text
+                    or "Access is denied" in stderr_text
+                    or proc.returncode == 2  # Exit code 2 often means access denied on Windows
+                ):
                     scripts_dir = self.platform.get_scripts_dir()
                     for ep_name in self.platform.get_entry_point_names():
                         ep_path = scripts_dir / ep_name
@@ -279,6 +299,9 @@ class UninstallManager:
             except PermissionError:
                 self._locked_paths.add(str(path))
                 logger.info("Permission denied (locked): %s", path)
+                # Try to disable the locked file so it can't be invoked
+                if sys.platform == "win32":
+                    self._disable_locked_exe(path)
             except Exception as e:
                 result.errors.append(f"Failed to remove {path}: {e}")
 
