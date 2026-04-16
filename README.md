@@ -1,4 +1,4 @@
-# MultiCode
+# MultiCode (Discontinue)
 
 ![b17fd556-788b-439d-9388-b669755d39c0](https://github.com/user-attachments/assets/49ee67c9-f054-4e7f-ab3b-fbc88cb88017)
 
