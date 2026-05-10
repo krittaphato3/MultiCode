@@ -419,21 +419,20 @@ def apply_preset(preset_name: str, models: list[ModelInfo]) -> set[str]:
     if not preset:
         return set()
 
-    selected = set()
+    selected: set[str] = set()
 
-    if "filter" in preset:
-        # Filter-based preset (e.g., all free models)
-        filter_func = preset["filter"]
+    filter_func = preset.get("filter")
+    if filter_func:
         for model in models:
-            # Use the internal API model for filter
             if filter_func(model._api_model):
                 selected.add(model.id)
-    elif "models" in preset:
-        # List-based preset (specific models)
-        preset_ids = set(preset["models"])
-        for model in models:
-            if model.id in preset_ids:
-                selected.add(model.id)
+    else:
+        preset_models = preset.get("models", [])
+        if preset_models:
+            preset_ids: set[str] = set(preset_models)
+            for model in models:
+                if model.id in preset_ids:
+                    selected.add(model.id)
 
     return selected
 

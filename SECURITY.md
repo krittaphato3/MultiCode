@@ -78,7 +78,8 @@ Or use GitHub Security Advisories (private):
 
 | Version | Security Updates | Status |
 |---------|-----------------|--------|
-| 0.2.x | Current | ✅ Supported |
+| 1.0.x | All features | ✅ Current |
+| 0.2.x | Critical only | ⚠️ Legacy |
 | 0.1.x | Critical only | ⚠️ Legacy |
 | < 0.1 | None | ❌ Unsupported |
 
@@ -93,6 +94,6 @@ Before each release:
 
 ---
 
-**Last Updated:** 2024-03-28
+**Last Updated:** 2026-05-10
 
 **Security Contact:** [GitHub Security Advisories](https://github.com/krittaphato3/MultiCode/security/advisories)

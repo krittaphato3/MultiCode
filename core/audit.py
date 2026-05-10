@@ -246,17 +246,18 @@ class AuditLogger:
 
 def _redact_dict(data: dict[str, Any]) -> dict[str, Any]:
     """Recursively redact sensitive strings from a dictionary."""
-    result = {}
+    result: dict[str, Any] = {}
     for key, value in data.items():
         if isinstance(value, str):
             result[key] = _redact_text(value)
         elif isinstance(value, dict):
             result[key] = _redact_dict(value)
         elif isinstance(value, list):
-            result[key] = [
+            redacted_list: list[str | Any] = [
                 _redact_text(item) if isinstance(item, str) else item
                 for item in value
             ]
+            result[key] = redacted_list
         else:
             result[key] = value
     return result

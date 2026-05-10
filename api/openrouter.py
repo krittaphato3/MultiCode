@@ -174,7 +174,7 @@ class OpenRouterClient:
         pauses with exponential backoff, and retries automatically.
         """
         backoff = self.initial_backoff
-        last_exception = None
+        last_exception: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -359,7 +359,7 @@ class OpenRouterClient:
             if m != model  # Don't duplicate primary model
         ][:max_fallbacks + 1]
         
-        last_error = None
+        last_error: OpenRouterError | None = None
         
         for i, model_id in enumerate(models_to_try):
             is_primary = (i == 0)
@@ -391,9 +391,9 @@ class OpenRouterClient:
                     f"{'Trying fallback...' if i < len(models_to_try) - 1 else 'No more fallbacks.'}"
                 )
                 continue
-                
+
             except Exception as e:
-                last_error = e
+                last_error = OpenRouterError(f"Unexpected error: {e}")
                 logger.error(f"Unexpected error with {model_id}: {e}")
                 continue
         

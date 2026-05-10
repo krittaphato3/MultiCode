@@ -40,12 +40,12 @@ class UltimateMultiAgentSystem:
         self.model_id = model_id
         self.filesystem = filesystem
         self.audit_logger = audit_logger
-        self.agents = {}
-        self.workflow = []
-        self.files_created = []
-        self.files_modified = []
-        self.conversation_history = []
-        self.voting_history = []
+        self.agents: dict[str, dict[str, Any]] = {}
+        self.workflow: list[dict[str, Any]] = []
+        self.files_created: list[str] = []
+        self.files_modified: list[str] = []
+        self.conversation_history: list[str] = []
+        self.voting_history: list[str] = []
 
     async def _load_agent_memories(self, agent_names: list[str]) -> dict[str, str]:
         """Load recent context for each agent from persistent memory store."""

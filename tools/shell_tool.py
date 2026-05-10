@@ -16,6 +16,7 @@ import asyncio
 import logging
 import re
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -405,7 +406,7 @@ class ShellExecutionTool(BaseTool):
         working_dir: str | None = None,
         capture_stderr: bool = True,
         skip_safety_check: bool = False,
-        permission_callback: callable | None = None,
+        permission_callback: Callable[..., bool] | None = None,
         **kwargs: Any
     ) -> ToolResult:
         """
@@ -447,11 +448,18 @@ class ShellExecutionTool(BaseTool):
         # If dangerous and not skipping safety check, request permission
         if analysis.requires_permission and not skip_safety_check:
             if permission_callback:
-                granted = await permission_callback(
-                    command=command,
-                    reason=analysis.reason,
-                    risk_level=analysis.risk_level,
-                )
+                if isinstance(permission_callback, Awaitable):
+                    granted = await permission_callback(
+                        command=command,
+                        reason=analysis.reason,
+                        risk_level=analysis.risk_level,
+                    )
+                else:
+                    granted = permission_callback(
+                        command=command,
+                        reason=analysis.reason,
+                        risk_level=analysis.risk_level,
+                    )
                 if not granted:
                     logger.warning("Permission denied for command: %s", command)
                     return ToolResult(

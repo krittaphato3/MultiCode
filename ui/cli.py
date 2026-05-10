@@ -32,8 +32,11 @@ from config import (
 )
 
 if TYPE_CHECKING:
+    from core.audit import AuditLogger
     from core.uninstall import UninstallManager
     from tools.filesystem import FileSystemTools
+else:
+    AuditLogger = None
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +81,7 @@ class MultiCodeCLI:
         # Uninstall flag
         self._uninstall_requested = False
         # Audit logger (initialized in run_main_loop)
-        self._audit = None
+        self._audit: AuditLogger | None = None
     
     def print_banner(self) -> None:
         """Display the MultiCode banner."""
@@ -289,8 +292,12 @@ class MultiCodeCLI:
             default_model = self.model_manager.get_default_free_model()
             if default_model:
                 model_info = self.model_manager.get_model_by_id(default_model)
-                self.console.print(f"\n[green]✓ Selected:[/green] {model_info.name}")
-                self.console.print(f"[dim]  ID: {default_model}[/dim]\n")
+                if model_info:
+                    self.console.print(f"\n[green]✓ Selected:[/green] {model_info.name}")
+                    self.console.print(f"[dim]  ID: {default_model}[/dim]\n")
+                else:
+                    self.console.print(f"\n[green]✓ Selected:[/green] {default_model}")
+                    self.console.print("[dim]  Model info unavailable[/dim]\n")
                 set_selected_models([default_model])
                 return [default_model]
             else:
@@ -417,7 +424,7 @@ class MultiCodeCLI:
                     continue
                 
                 if max_agents > MAX_AGENTS_WARNING_THRESHOLD:
-                    self.console.print("\n" + Panel(
+                    warning_panel = Panel(
                         f"[yellow]⚠️  WARNING: You've set {max_agents} agents[/yellow]\n\n"
                         f"This will significantly increase:\n"
                         f"  • API costs (each agent makes multiple requests)\n"
@@ -425,7 +432,8 @@ class MultiCodeCLI:
                         f"  • Response time\n\n"
                         f"Recommended: 3-5 agents for most tasks",
                         border_style="yellow",
-                    ))
+                    )
+                    self.console.print(warning_panel)
                     
                     if not Confirm.ask("Continue with this setting?"):
                         continue
@@ -522,10 +530,15 @@ class MultiCodeCLI:
         self.console.print("\n[dim]Verifying API key...[/dim]")
         try:
             import requests
+            api_key = self.client.api_key
+            if not api_key:
+                self.console.print("[red]✗ No API key configured![/red]")
+                self.console.print("[yellow]Please run 'python main.py --reset' to enter a key[/yellow]")
+                return
             response = requests.get(
                 url="https://openrouter.ai/api/v1/models",
                 headers={
-                    "Authorization": f"Bearer {self.client.api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "HTTP-Referer": "https://github.com/multicode",
                     "X-OpenRouter-Title": "MultiCode",
                 },
@@ -1279,7 +1292,7 @@ class MultiCodeCLI:
             return
 
         # Audit event
-        if getattr(self, "_audit", None):
+        if self._audit is not None:
             try:
                 from core.audit import AuditAction
                 self._audit.log(

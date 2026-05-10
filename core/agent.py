@@ -488,28 +488,31 @@ class Agent:
     ) -> AsyncGenerator[tuple[str, bool, list[FileWriteAction]], None]:
         """
         Generate a streaming response.
-        
+
         Yields:
             Tuples of (chunk, is_complete, file_writes)
             - chunk: The text chunk
             - is_complete: True when response is complete
             - file_writes: List of file writes (only populated at end)
         """
-        content_parts = []
-        
-        async for chunk in await self.generate_response(
-            conversation_history,
-            stream=True,
-            execute_writes=False,
-        ):
-            content_parts.append(chunk)
-            yield (chunk, False, [])
-        
-        # Final yield with complete content and parsed actions
+        content_parts: list[str] = []
+
+        response = await self._client.chat_completion(
+            messages=conversation_history,
+            model=self.model_id,
+            system_prompt=self.system_prompt,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            stream=False,
+        )
+
+        content_parts.append(response.content)
+        yield (response.content, False, [])
+
         full_content = "".join(content_parts)
         file_writes = self._parse_file_writes(full_content)
         self._check_consensus(full_content)
-        
+
         yield ("", True, file_writes)
     
     def __repr__(self) -> str:

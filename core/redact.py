@@ -169,23 +169,26 @@ class Redactor:
             return text
         result = text
         for rule in self._rules:
-            # Use lambda-based replacement to avoid backslash escaping issues
-            result = rule.pattern.sub(lambda m, r=rule.replacement: r, result)
+            replacement_str = rule.replacement
+            def replacer(match: re.Match[str], replacement: str = replacement_str) -> str:
+                return replacement
+            result = rule.pattern.sub(replacer, result)
         return result
 
     def redact_dict(self, data: dict[str, Any]) -> dict[str, Any]:
         """Redact all string values in a dictionary."""
-        result = {}
+        result: dict[str, Any] = {}
         for key, value in data.items():
             if isinstance(value, str):
                 result[key] = self.redact(value)
             elif isinstance(value, dict):
                 result[key] = self.redact_dict(value)
             elif isinstance(value, list):
-                result[key] = [
+                redacted_list: list[str | Any] = [
                     self.redact(item) if isinstance(item, str) else item
                     for item in value
                 ]
+                result[key] = redacted_list
             else:
                 result[key] = value
         return result
