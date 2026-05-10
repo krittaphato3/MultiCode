@@ -289,6 +289,67 @@ class RoutingSettings:
 
 
 @dataclass
+class ProviderCredentialConfig:
+    """Credentials for a single provider."""
+    api_key: str | None = None
+    base_url: str | None = None
+    is_configured: bool = False
+    is_validated: bool = False
+    default_model: str | None = None
+
+
+@dataclass
+class ProviderSettings:
+    """Multi-provider API configuration."""
+    active_provider: str = "openrouter"  # Current active provider
+    providers: dict[str, ProviderCredentialConfig] = field(default_factory=dict)
+
+    def get_provider_credential(self, provider_id: str) -> ProviderCredentialConfig | None:
+        """Get credentials for a specific provider."""
+        return self.providers.get(provider_id)
+
+    def set_provider_credential(
+        self,
+        provider_id: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        default_model: str | None = None,
+    ) -> None:
+        """Set credentials for a provider."""
+        if provider_id not in self.providers:
+            self.providers[provider_id] = ProviderCredentialConfig()
+        cred = self.providers[provider_id]
+        if api_key is not None:
+            cred.api_key = api_key
+            cred.is_configured = True
+        if base_url is not None:
+            cred.base_url = base_url
+        if default_model is not None:
+            cred.default_model = default_model
+
+    def remove_provider(self, provider_id: str) -> bool:
+        """Remove credentials for a provider."""
+        if provider_id in self.providers:
+            del self.providers[provider_id]
+            return True
+        return False
+
+    def get_configured_providers(self) -> list[str]:
+        """Get list of configured provider IDs."""
+        return [
+            pid for pid, cred in self.providers.items()
+            if cred.is_configured and cred.api_key
+        ]
+
+    def has_any_provider(self) -> bool:
+        """Check if any provider is configured."""
+        return any(
+            cred.is_configured and cred.api_key
+            for cred in self.providers.values()
+        )
+
+
+@dataclass
 class Settings:
     """
     Main settings class containing all configuration.
@@ -304,6 +365,7 @@ class Settings:
     safety: SafetySettings = field(default_factory=SafetySettings)
     ui: UISettings = field(default_factory=UISettings)
     routing: RoutingSettings = field(default_factory=RoutingSettings)
+    provider: ProviderSettings = field(default_factory=ProviderSettings)
     
     # Metadata
     version: str = "1.0.0"
@@ -320,6 +382,19 @@ class Settings:
             "safety": asdict(self.safety),
             "ui": asdict(self.ui),
             "routing": asdict(self.routing),
+            "provider": {
+                "active_provider": self.provider.active_provider,
+                "providers": {
+                    pid: {
+                        "api_key": "***REDACTED***" if cred.api_key else None,
+                        "base_url": cred.base_url,
+                        "is_configured": cred.is_configured,
+                        "is_validated": cred.is_validated,
+                        "default_model": cred.default_model,
+                    }
+                    for pid, cred in self.provider.providers.items()
+                },
+            },
         }
     
     @classmethod
@@ -350,6 +425,20 @@ class Settings:
 
         if "routing" in data:
             settings.routing = RoutingSettings(**data["routing"])
+
+        if "provider" in data:
+            provider_data = data["provider"]
+            settings.provider.active_provider = provider_data.get("active_provider", "openrouter")
+            providers_data = provider_data.get("providers", {})
+            for pid, cred_data in providers_data.items():
+                cred = ProviderCredentialConfig(
+                    api_key=cred_data.get("api_key"),
+                    base_url=cred_data.get("base_url"),
+                    is_configured=cred_data.get("is_configured", False),
+                    is_validated=cred_data.get("is_validated", False),
+                    default_model=cred_data.get("default_model"),
+                )
+                settings.provider.providers[pid] = cred
 
         return settings
     
@@ -470,6 +559,7 @@ class Settings:
         self.safety = SafetySettings()
         self.ui = UISettings()
         self.routing = RoutingSettings()
+        self.provider = ProviderSettings()
     
     def get_setting(self, path: str) -> Any:
         """
@@ -704,3 +794,58 @@ def set_selected_models(model_ids: list[str]) -> bool:
 def is_setup_complete() -> bool:
     """Check if the initial setup (API key) is complete (legacy compatibility)."""
     return get_api_key() is not None
+
+
+def set_provider_credential(
+    provider_id: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    default_model: str | None = None,
+) -> bool:
+    """
+    Set credentials for a provider.
+
+    Args:
+        provider_id: Provider identifier (e.g., "openrouter", "openai")
+        api_key: The API key for the provider
+        base_url: Optional custom base URL
+        default_model: Optional default model for the provider
+
+    Returns:
+        True if saved successfully
+    """
+    settings = get_settings()
+    settings.provider.set_provider_credential(
+        provider_id=provider_id,
+        api_key=api_key,
+        base_url=base_url,
+        default_model=default_model,
+    )
+    return settings.save()
+
+
+def get_provider_credential(provider_id: str) -> ProviderCredentialConfig | None:
+    """Get credentials for a specific provider."""
+    settings = get_settings()
+    return settings.provider.get_provider_credential(provider_id)
+
+
+def get_active_provider() -> str:
+    """Get the active provider ID."""
+    settings = get_settings()
+    return settings.provider.active_provider
+
+
+def set_active_provider(provider_id: str) -> bool:
+    """Set the active provider."""
+    settings = get_settings()
+    if provider_id not in settings.provider.providers:
+        return False
+    settings.provider.active_provider = provider_id
+    return settings.save()
+
+
+def get_configured_providers() -> list[str]:
+    """Get list of configured provider IDs."""
+    settings = get_settings()
+    return settings.provider.get_configured_providers()

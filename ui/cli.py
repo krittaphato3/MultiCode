@@ -625,6 +625,8 @@ class MultiCodeCLI:
                         await self._change_banner()
                     elif command == "/mode":
                         await self._change_mode()
+                    elif command == "/auth":
+                        await self._handle_auth_command(user_input)
                     elif command == "/memory":
                         await self._handle_memory_command(user_input)
                     else:
@@ -1379,6 +1381,255 @@ class MultiCodeCLI:
         save_settings(settings)
 
         self.console.print(f"\n[green]✓ Workflow mode set to '{choice}'[/green]\n")
+
+    async def _handle_auth_command(self, full_input: str) -> None:
+        """Handle /auth command for provider management."""
+
+        parts = full_input.strip().split()
+        subcommand = parts[1].lower() if len(parts) > 1 else ""
+
+        if subcommand == "list":
+            await self._auth_list_providers()
+        elif subcommand == "add":
+            await self._auth_add_provider(parts[2:] if len(parts) > 2 else None)
+        elif subcommand == "remove" and len(parts) > 2:
+            await self._auth_remove_provider(parts[2])
+        elif subcommand == "active":
+            await self._auth_show_active()
+        elif subcommand == "set" and len(parts) > 2:
+            await self._auth_set_active(parts[2])
+        elif subcommand == "validate" and len(parts) > 2:
+            await self._auth_validate_provider(parts[2])
+        else:
+            await self._auth_show_help()
+
+    async def _auth_list_providers(self) -> None:
+        """List all providers and their status."""
+        from config import (
+            PROVIDER_INFO,
+            SUPPORTED_PROVIDERS,
+            get_active_provider,
+            get_configured_providers,
+        )
+
+        active = get_active_provider()
+        configured = get_configured_providers()
+
+        self.console.print("\n[bold]Configured API Providers:[/bold]\n")
+
+        table = Table(box=box.SIMPLE, show_header=True)
+        table.add_column("Provider", style="cyan", width=15)
+        table.add_column("Status", width=12)
+        table.add_column("Name", width=20)
+        table.add_column("Description")
+
+        for provider_id in SUPPORTED_PROVIDERS:
+            info = PROVIDER_INFO.get(provider_id, {})
+            is_configured = provider_id in configured
+            is_active = provider_id == active
+
+            status_parts = []
+            if is_active:
+                status_parts.append("[green]ACTIVE[/green]")
+            if is_configured:
+                status_parts.append("[cyan]CONFIGURED[/cyan]")
+
+            status = " | ".join(status_parts) if status_parts else "[dim]Not configured[/dim]"
+
+            table.add_row(
+                provider_id,
+                status,
+                info.get("name", provider_id),
+                info.get("description", ""),
+            )
+
+        self.console.print(table)
+        self.console.print()
+
+    async def _auth_add_provider(self, args: list[str] | None) -> None:
+        """Add or update a provider API key."""
+        from api.providers.base import ProviderType, get_provider_class
+        from config import PROVIDER_INFO, SUPPORTED_PROVIDERS, set_provider_credential
+
+        self.console.print("\n[bold]Add/Update Provider API Key[/bold]\n")
+
+        available = ", ".join(f"[cyan]{p}[/cyan]" for p in SUPPORTED_PROVIDERS)
+        self.console.print(f"Available providers: {available}\n")
+
+        if args and args[0] in SUPPORTED_PROVIDERS:
+            provider_id = args[0]
+        else:
+            provider_id = Prompt.ask(
+                "[bold]Select provider[/bold] (or type 'cancel')",
+            ).strip().lower()
+
+            if provider_id == "cancel":
+                self.console.print("[yellow]Cancelled.[/yellow]\n")
+                return
+
+            if provider_id not in SUPPORTED_PROVIDERS:
+                self.console.print(f"[red]Unknown provider: {provider_id}[/red]")
+                self.console.print(f"Available: {', '.join(SUPPORTED_PROVIDERS)}\n")
+                return
+
+        info = PROVIDER_INFO.get(provider_id, {})
+        self.console.print(f"\n[bold cyan]{info.get('name', provider_id)}[/bold cyan]")
+        self.console.print(f"[dim]{info.get('description', '')}[/dim]")
+        self.console.print(f"Website: {info.get('website', 'N/A')}\n")
+
+        api_key = Prompt.ask(
+            f"[bold]Enter API key for {info.get('name', provider_id)}[/bold]",
+            default="",
+        ).strip()
+
+        if not api_key:
+            self.console.print("[red]API key cannot be empty[/red]\n")
+            return
+
+        base_url = None
+        if provider_id == "ollama":
+            default_url = "http://localhost:11434/v1"
+            base_url = Prompt.ask(
+                f"[bold]Base URL[/bold] (default: {default_url})",
+                default=default_url,
+            ).strip() or default_url
+
+        self.console.print("\n[dim]Validating API key...[/dim]")
+
+        provider_type = ProviderType(provider_id)
+        provider_class = get_provider_class(provider_type)
+
+        if provider_class:
+            provider_instance = provider_class(api_key=api_key, base_url=base_url)
+            try:
+                is_valid = await provider_instance.validate_credentials()
+                if is_valid:
+                    self.console.print("[green]✓ API key validated successfully![/green]\n")
+                else:
+                    self.console.print("[yellow]⚠ API key may not be valid[/yellow]\n")
+            except Exception as e:
+                self.console.print(f"[yellow]⚠ Validation warning: {e}[/yellow]\n")
+
+        success = set_provider_credential(
+            provider_id=provider_id,
+            api_key=api_key,
+            base_url=base_url,
+        )
+
+        if success:
+            self.console.print(f"[green]✓ API key saved for {info.get('name', provider_id)}[/green]\n")
+
+            from config import get_settings, save_settings
+            settings = get_settings()
+            settings.provider.active_provider = provider_id
+            save_settings(settings)
+            self.console.print("[green]✓ Provider set as active[/green]\n")
+        else:
+            self.console.print("[red]✗ Failed to save API key[/red]\n")
+
+    async def _auth_remove_provider(self, provider_id: str) -> None:
+        """Remove a provider configuration."""
+        from config import PROVIDER_INFO, SUPPORTED_PROVIDERS, get_settings, save_settings
+
+        if provider_id not in SUPPORTED_PROVIDERS:
+            self.console.print(f"[red]Unknown provider: {provider_id}[/red]\n")
+            return
+
+        info = PROVIDER_INFO.get(provider_id, {})
+
+        if not Confirm.ask(f"Remove API key for [bold]{info.get('name', provider_id)}[/bold]?"):
+            self.console.print("[yellow]Cancelled.[/yellow]\n")
+            return
+
+        settings = get_settings()
+        if settings.provider.remove_provider(provider_id):
+            save_settings(settings)
+            self.console.print(f"[green]✓ API key removed for {info.get('name', provider_id)}[/green]\n")
+        else:
+            self.console.print(f"[yellow]No API key found for {info.get('name', provider_id)}[/yellow]\n")
+
+    async def _auth_show_active(self) -> None:
+        """Show the currently active provider."""
+        from config import PROVIDER_INFO, get_active_provider
+
+        active = get_active_provider()
+        info = PROVIDER_INFO.get(active, {})
+
+        self.console.print(f"\n[bold]Active Provider:[/bold]")
+        self.console.print(f"  [cyan]{info.get('name', active)}[/cyan] ({active})")
+        self.console.print(f"  [dim]{info.get('description', '')}[/dim]\n")
+
+    async def _auth_set_active(self, provider_id: str) -> None:
+        """Set the active provider."""
+        from config import (
+            PROVIDER_INFO,
+            SUPPORTED_PROVIDERS,
+            get_provider_credential,
+            set_active_provider,
+        )
+
+        if provider_id not in SUPPORTED_PROVIDERS:
+            self.console.print(f"[red]Unknown provider: {provider_id}[/red]\n")
+            return
+
+        cred = get_provider_credential(provider_id)
+        if not cred or not cred.api_key:
+            self.console.print(f"[red]Provider {provider_id} is not configured. Use /auth add first.[/red]\n")
+            return
+
+        if set_active_provider(provider_id):
+            info = PROVIDER_INFO.get(provider_id, {})
+            self.console.print(f"[green]✓ Active provider set to {info.get('name', provider_id)}[/green]\n")
+        else:
+            self.console.print("[red]✗ Failed to set active provider[/red]\n")
+
+    async def _auth_validate_provider(self, provider_id: str) -> None:
+        """Validate a provider's API key."""
+        from api.providers.base import ProviderType, get_provider_class
+        from config import SUPPORTED_PROVIDERS, get_provider_credential
+
+        if provider_id not in SUPPORTED_PROVIDERS:
+            self.console.print(f"[red]Unknown provider: {provider_id}[/red]\n")
+            return
+
+        cred = get_provider_credential(provider_id)
+        if not cred or not cred.api_key:
+            self.console.print(f"[red]Provider {provider_id} is not configured. Use /auth add first.[/red]\n")
+            return
+
+        self.console.print(f"\n[dim]Validating {provider_id} API key...[/dim]")
+
+        provider_type = ProviderType(provider_id)
+        provider_class = get_provider_class(provider_type)
+
+        if not provider_class:
+            self.console.print(f"[red]Provider class not found for {provider_id}[/red]\n")
+            return
+
+        provider_instance = provider_class(api_key=cred.api_key, base_url=cred.base_url)
+        try:
+            is_valid = await provider_instance.validate_credentials()
+            if is_valid:
+                self.console.print("[green]✓ API key is valid![/green]\n")
+            else:
+                self.console.print("[yellow]⚠ API key validation returned false[/yellow]\n")
+        except Exception as e:
+            self.console.print(f"[red]✗ Validation failed: {e}[/red]\n")
+
+    async def _auth_show_help(self) -> None:
+        """Show /auth command help."""
+        self.console.print("\n[bold]Auth Commands:[/bold]")
+        table = Table(box=box.SIMPLE)
+        table.add_column("Command", style="cyan", width=20)
+        table.add_column("Description")
+        table.add_row("/auth list", "Show all providers and their status")
+        table.add_row("/auth add [provider]", "Add or update a provider API key")
+        table.add_row("/auth remove <provider>", "Remove a provider's API key")
+        table.add_row("/auth active", "Show the currently active provider")
+        table.add_row("/auth set <provider>", "Set the active provider")
+        table.add_row("/auth validate <provider>", "Validate a provider's API key")
+        self.console.print(table)
+        self.console.print("\n[dim]Providers: openrouter, openai, anthropic, nvidia, groq, mistral, google, ollama[/dim]\n")
 
     async def _handle_memory_command(self, full_input: str) -> None:
         """Handle /memory subcommands: list, show <agent>, clear <agent>."""
