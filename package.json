@@ -1,0 +1,25 @@
+{
+  "name": "multicode",
+  "version": "2.0.0-alpha.1",
+  "description": "MultiCode 2.0 — agentic coding CLI with universal provider support. Zero runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "multicode": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
